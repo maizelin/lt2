@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>🩺 SMART Statin CDS v2.0 - 台灣血脂治療決策支援</title>
+  <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 20px; max-width: 1000px; margin: 0 auto; line-height: 1.6; }
+    .patient-select { margin-bottom: 20px; padding: 16px; border: 1px solid #ddd; border-radius: 12px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); }
+    label { font-weight: 600; color: #2c3e50; }
+    select { padding: 10px 16px; font-size: 16px; border: 2px solid #3498db; border-radius: 8px; background: white; min-width: 400px; }
+    .demo-note { font-size: 14px; color: #666; margin-left: 20px; display: inline-block; }
+    .decision { color: white; padding: 24px; border-radius: 16px; margin-bottom: 24px; box-shadow: 0 8px 32px rgba(0,0,0,0.1); min-height: 140px; font-size: 16px; }
+    .decision.high { background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%); }
+    .decision.medium { background: linear-gradient(135deg, #feca57 0%, #ff9ff3 100%); }
+    .decision.low { background: linear-gradient(135deg, #48dbfb 0%, #0abde3 100%); }
+    .decision.veryhigh { background: linear-gradient(135deg, #c44569 0%, #ee5a24 100%); border: 2px solid #ff4757; }
+    .status-badge { display: inline-block; font-weight: bold; padding: 6px 12px; border-radius: 20px; margin: 4px 0; font-size: 14px; }
+    .status-emergency { background: #ff4757; color: white; }
+    .status-warning { background: #ffa502; color: white; }
+    .status-monitor { background: #2ed573; color: white; }
+    .status-good { background: #1e90ff; color: white; }
+    pre { background: #f8f9fa; border: 1px solid #e9ecef; padding: 20px; border-radius: 12px; max-height: 350px; overflow: auto; font-size: 13px; line-height: 1.4; }
+    h1 { color: #2c3e50; text-align: center; margin-bottom: 32px; font-size: 28px; }
+    h2 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 12px; margin-top: 32px; }
+    .emoji { font-size: 20px; margin-right: 8px; }
+    .debug-mode { background: #fff3cd; border: 1px solid #ffeaa7; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>🩺 SMART Statin CDS v2.0 - 台灣血脂治療決策支援系統</h1>
+  
+  <div class="debug-mode" id="debugInfo" style="display: none;">
+    🔧 <strong>Debug 模式</strong> | 直接開啟測試（非 SMART Launch）| 實際使用請從 EHR Launch
+  </div>
+  
+  <div class="patient-select">
+    <label for="patientSelect">選擇測試個案：</label>
+    <select id="patientSelect">
+      <option value="671555">個案 A：王阿明（55歲，一般風險，LDL 130 mg/dL）</option>
+      <option value="671561">個案 B：王小明（62歲，糖尿病高風險，LDL 120 mg/dL）</option>
+      <option value="684947">個案 C：李大衛（68歲，心肌梗塞非常高風險，LDL 80 mg/dL）</option>
+    </select>
+    <div class="demo-note">*測試環境病人清單 | 實際EHR將自動傳入目前就診病人</div>
+  </div>
+
+  <div id="decision" class="decision" style="min-height: 140px;">
+    請選擇個案以查看個人化血脂治療建議...
+  </div>
+
+  <h2><span class="emoji">👤</span>病人基本資料</h2>
+  <pre id="patient">等待載入病人資料...</pre>
+
+  <h2><span class="emoji">🧪</span>最近檢驗結果</h2>
+  <pre id="obs">等待載入檢驗資料...</pre>
+
+  <script type="text/javascript">
+    // FHIR Server 設定（Debug 模式用）
+    const FHIR_SERVER = "https://thas.mohw.gov.tw/v/r4/fhir";
+    
+    // 三個病人的風險分層設定
+    const PATIENT_RISK = {
+      "671555": { level: "low", name: "一般風險", target: 130, desc: "至少1項風險因子" },
+      "671561": { level: "high", name: "高風險（糖尿病）", target: 100, desc: "第2型糖尿病10年" },
+      "684947": { level: "veryhigh", name: "非常高風險（心肌梗塞）", target: 70, desc: "急性心肌梗塞病史" }
+    };
+
+    let fhirClient = null;
+
+    // 從 Observation Bundle 提取 LDL-C 值
+    function extractLdlValue(obsBundle) {
+      if (!obsBundle) return null;
+      const bundle = Array.isArray(obsBundle) ? obsBundle[0] : obsBundle;
+      if (!bundle.entry || !bundle.entry.length) return null;
+
+      for (const e of bundle.entry) {
+        const res = e.resource;
+        if (res?.resourceType === "Observation") {
+          const codings = res.code?.coding || [];
+          if (codings.some(c => c.system === "http://loinc.org" && c.code === "13457-7")) {
+            return res.valueQuantity?.value || null;
+          }
+        }
+      }
+      return null;
+    }
+
+    // 取得風險等級資訊
+    function getRiskInfo(patientId) {
+      return PATIENT_RISK[patientId] || PATIENT_RISK["671555"];
+    }
+
+    // 主要決策邏輯
+    function evaluateStatinRecommendation(ldl, patientId) {
+      const risk = getRiskInfo(patientId);
+      const target = risk.target;
+      
+      let suggestion, statusClass, emoji, statusText;
+      
+      if (ldl === null) {
+        return `
+          <div style="font-size: 24px; margin-bottom: 12px;">❓ LDL-C 資料不足</div>
+          <div style="font-size: 16px; opacity: 0.9;">
+            請確認最近血脂檢驗資料，或聯繫檢驗科補充 LDL-C 數值<br>
+            <small>依台灣血脂管理共識，需 LDL-C 數值才能進行風險分層</small>
+          </div>
+        `;
+      }
+
+      if (ldl >= target * 1.2) {
+        suggestion = `🚨 <strong>立即加強治療</strong>`; statusClass = "status-emergency"; emoji = "🚨"; statusText = "緊急調整治療";
+      } else if (ldl >= target) {
+        suggestion = `⚠️ <strong>加強現有治療</strong>`; statusClass = "status-warning"; emoji = "⚠️"; statusText = "治療不足";
+      } else if (ldl >= target * 0.8) {
+        suggestion = `✅ <strong>持續監測</strong>`; statusClass = "status-monitor"; emoji = "✅"; statusText = "接近目標";
+      } else {
+        suggestion = `👍 <strong>良好控制</strong>`; statusClass = "status-good"; emoji = "👍"; statusText = "已達標";
+      }
+
+      return `
+        <div style="font-size: 24px; margin-bottom: 12px;">${emoji} LDL-C ${ldl} mg/dL</div>
+        <div style="font-size: 18px; margin-bottom: 16px;">
+          <strong>${risk.name}</strong><br>
+          <small>${risk.desc} | 目標 LDL-C &lt;${risk.target} mg/dL</small>
+        </div>
+        <div style="font-size: 20px; margin-bottom: 12px;">💊 ${suggestion}</div>
+        <span class="${statusClass}">${statusText}</span><br>
+        <div style="margin-top: 16px; font-size: 14px; opacity: 0.9;">
+          📖 依「台灣血脂管理臨床路徑共識 2025」簡化示意<br>
+          實際治療請醫師綜合評估
+        </div>
+      `;
+    }
+
+    // 使用 FHIR Client 載入資料
+    async function loadPatientWithClient(client, patientId) {
+      const risk = getRiskInfo(patientId);
+      const decisionEl = document.getElementById("decision");
+      decisionEl.className = `decision ${risk.level}`;
+      decisionEl.innerHTML = `<div style="font-size: 20px;">🔄 SMART 載入中...</div>`;
+
+      try {
+        // Load Patient
+        const pt = await client.request(`Patient/${patientId}`);
+        document.getElementById("patient").textContent = JSON.stringify(pt, null, 2);
+        
+        // Load Observations
+        const bundle = await client.request(`Observation?patient=${patientId}`, { pageLimit: 0 });
+        document.getElementById("obs").textContent = JSON.stringify(bundle, null, 2);
+        const ldl = extractLdlValue(bundle);
+        decisionEl.innerHTML = evaluateStatinRecommendation(ldl, patientId);
+      } catch(e) {
+        document.getElementById("patient").textContent = `錯誤：${String(e)}`;
+        document.getElementById("obs").textContent = `錯誤：${String(e)}`;
+        decisionEl.innerHTML = `<div style="font-size: 20px;">❌ SMART 讀取失敗</div><div>${String(e)}</div>`;
+      }
+    }
+
+    // Debug 模式直接呼叫 FHIR API
+    async function loadPatientDebug(patientId) {
+      const risk = getRiskInfo(patientId);
+      const decisionEl = document.getElementById("decision");
+      decisionEl.className = `decision ${risk.level}`;
+      decisionEl.innerHTML = `<div style="font-size: 20px;">🔧 Debug 載入中...</div>`;
+
+      try {
+        // Load Patient
+        const ptResp = await fetch(`${FHIR_SERVER}/Patient/${patientId}`);
+        const pt = await ptResp.json();
+        document.getElementById("patient").textContent = JSON.stringify(pt, null, 2);
+        
+        // Load Observations
+        const obsResp = await fetch(`${FHIR_SERVER}/Observation?patient=${patientId}`);
+        const bundle = await obsResp.json();
+        document.getElementById("obs").textContent = JSON.stringify(bundle, null, 2);
+        const ldl = extractLdlValue(bundle);
+        decisionEl.innerHTML = evaluateStatinRecommendation(ldl, patientId);
+      } catch(e) {
+        document.getElementById("patient").textContent = `錯誤：${String(e)}`;
+        document.getElementById("obs").textContent = `錯誤：${String(e)}`;
+        decisionEl.innerHTML = `<div style="font-size: 20px;">❌ 載入失敗</div><div>${String(e)}</div>`;
+      }
+    }
+
+    // 初始化
+    function initApp() {
+      const select = document.getElementById("patientSelect");
+      
+      // 嘗試 SMART on FHIR
+      FHIR.oauth2.ready().then(async (client) => {
+        fhirClient = client;
+        document.getElementById("debugInfo").style.display = "none";
+        loadPatientWithClient(client, select.value);
+      }).catch(() => {
+        // SMART 失敗，啟用 Debug 模式
+        document.getElementById("debugInfo").style.display = "block";
+        loadPatientDebug(select.value);
+      });
+      
+      select.addEventListener("change", () => {
+        if (fhirClient) {
+          loadPatientWithClient(fhirClient, select.value);
+        } else {
+          loadPatientDebug(select.value);
+        }
+      });
+    }
+
+    // 頁面載入完成後啟動
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initApp);
+    } else {
+      initApp();
+    }
+  </script>
+</body>
+</html>

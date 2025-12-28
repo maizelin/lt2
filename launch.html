@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SMART Statin CDS v2.0 - 台灣血脂治療決策支援</title>
+  <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      min-height: 100vh;
+    }
+    .logo {
+      font-size: 28px;
+      margin-bottom: 20px;
+      font-weight: 300;
+    }
+    .loading {
+      font-size: 18px;
+      margin: 40px 0;
+    }
+    .spinner {
+      border: 4px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top: 4px solid white;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="logo">🩺 SMART Statin CDS v2.0</div>
+  <div class="loading">
+    <div class="spinner"></div>
+    <div>正在初始化 SMART on FHIR 授權...</div>
+    <div style="font-size: 14px; opacity: 0.8; margin-top: 10px;">
+      台灣血脂治療決策支援系統
+    </div>
+  </div>
+
+  <script>
+    // SMART on FHIR Launch 配置（針對 THAS Sandbox）
+    const launchConfig = {
+      serverUrl: "https://thas.mohw.gov.tw/v/r4/fhir",
+      clientId: "smart-statin-cds",
+      
+      // SMART scopes：讀取病人資料、檢驗結果、病史、用藥
+      scope: "openid fhirUser patient/*.read launch",
+      
+      // 重導向到 index.html（同目錄）
+      redirectUri: window.location.origin + window.location.pathname.replace(/\/launch\.html$/, '') + "index.html",
+      
+      // FHIR 版本
+      fhirVersion: "R4"
+    };
+
+    // 啟動 SMART 授權流程
+    FHIR.oauth2.authorize(launchConfig).catch(function(err) {
+      document.body.innerHTML = `
+        <div style="background: #ff6b6b; color: white; padding: 20px; border-radius: 12px; margin: 20px;">
+          <h3>🚫 SMART 啟動失敗</h3>
+          <p>${err.message || String(err)}</p>
+          <p><small>請確認 Launch URL 正確，並從 THAS Sandbox 啟動</small></p>
+        </div>
+      `;
+    });
+  </script>
+</body>
+</html>
